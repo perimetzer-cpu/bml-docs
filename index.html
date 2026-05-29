@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BML Docs — כלי מסמכים משפטיים</title>
+
+  <!-- Tailwind -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- React + Babel -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- Document libraries -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/docx/8.5.0/docx.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
+  <style>
+    @font-face { font-family: 'David'; src: local('David'), local('David Libre'); }
+    * { font-family: 'David', 'David Libre', 'Times New Roman', serif; }
+    body { margin: 0; background: #f8fafc; direction: rtl; }
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #f1f5f9; }
+    ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- ============================================================
+       CONFIG — ערוך כאן את המפתחות
+       ============================================================ -->
+  <script>
+    // 👇 הכנס כאן את מפתח ה-Gemini שלך (מ-aistudio.google.com/apikey)
+    window.GEMINI_API_KEY = "PASTE_YOUR_GEMINI_KEY_HERE";
+    // 👇 בחר סיסמא לצוות
+    window.APP_PASSWORD = "bml2025";
+  </script>
+
+  <script type="text/babel" data-type="module">
+    const { useState, useRef, useEffect } = React;
+
+    // ============================================================
+    // BML CONSTANTS
+    // ============================================================
+    const BML_LAWYERS = ['בטי מצר-לוי', 'רווית קרן-רוזין', 'ליאת אלזנר', 'אופיר דוד', 'פרי מצר סולומון'];
+    const BML_LAWYERS_SIGN = ['בטי מצר לוי, עו"ד', 'רווית קרן רוזין, עו"ד', 'ליאת אלזנר, עו"ד', 'אופיר דוד, עו"ד', 'פרי מצר סולומון, עו"ד'];
+    const BML_ADDRESS = 'מרחוב אבא אבן 8, הרצליה';
+    const BML_PHONE = '03-9405151';
+    const BML_FAX = '03-7157488';
+    const BML_EMAIL = 'office@bettylaw.co.il';
+
+    const DOC_TYPES = [
+      { id: 'court_motion', title: 'בקשה לבית משפט', subtitle: 'על בסיס טמפלט BML' },
+      { id: 'trial_request_traffic', title: 'בקשה להישפט', subtitle: 'מרכז פניות נהגים' },
+      { id: 'demand_letter', title: 'כתב דרישה / התראה', subtitle: 'מכתב רשמי' },
+      { id: 'power_of_attorney', title: 'ייפוי כוח', subtitle: 'נוסח מלא' },
+    ];
+
+    // ============================================================
+    // GEMINI API
+    // ============================================================
+    async function callGemini(prompt, systemPrompt = '') {
+      const key = window.GEMINI_API_KEY;
+      if (!key || key === "PASTE_YOUR_GEMINI_KEY_HERE") {
+        throw new Error('לא הוגדר מפתח Gemini. ערוך את הקובץ והכנס מפתח.');
+      }
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`;
+      const body = {
+        contents: [{ parts: [{ text: (systemPrompt ? systemPrompt + '\n\n' : '') + prompt }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 4000 },
+      };
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error('שגיאת Gemini: ' + err.substring(0, 150));
+      }
+      const data = await res.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    }
+
+    async function callGeminiVision(base64, mimeType, prompt) {
+      const key = window.GEMINI_API_KEY;
+      if (!key || key === "PASTE_YOUR_GEMINI_KEY_HERE") {
+        throw new Error('לא הוגדר מפתח Gemini.');
+      }
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`;
+      const body = {
+        contents: [{
+          parts: [
+            { inline_data: { mime_type: mimeType, data: base64 } },
+            { text: prompt },
+          ],
+        }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 1500 },
+      };
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error('שגיאת Gemini Vision: ' + err.substring(0, 150));
+      }
+      const data = await res.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    }
+
+    const LEGAL_SYSTEM = 'אתה עורך דין בכיר במשרד BML Law בישראל. אתה מנסח טקסטים משפטיים בעברית משפטית רהוטה, תמציתית ומדויקת. כתוב בלשון זכר נסתר. אל תוסיף הקדמות או סיכומים. החזר אך ורק את הטקסט המבוקש. אל תשתמש ב-markdown.';
+
+    // ============================================================
+    // DOCX GENERATORS
+    // ============================================================
+    function getDocx() {
+      if (!window.docx) throw new Error('ספריית docx לא נטענה. רענן את הדף.');
+      return window.docx;
+    }
+
+    async function generateTrialRequestDocx(data) {
+      const { Document, Packer, Paragraph, TextRun, AlignmentType } = getDocx();
+      const david = 'David';
+      const today = data.letterDate || new Date().toLocaleDateString('he-IL');
+      const offenseDate = data.offenseDate || '______';
+      const reportNumber = data.reportNumber || '______';
+      const offenseType = data.offenseType || '______';
+      const driverName = data.driverName || '______';
+      const driverId = data.driverId || '______';
+
+      const children = [
+        new Paragraph({ alignment: AlignmentType.RIGHT, bidirectional: true, children: [new TextRun({ text: 'תאריך ' + today, font: david, size: 24 })] }),
+        new Paragraph({ text: '', spacing: { before: 400 } }),
+        new Paragraph({ alignment: AlignmentType.RIGHT, bidirectional: true, children: [new TextRun({ text: 'לכבוד:', font: david, size: 24 })] }),
+        new Paragraph({ alignment: AlignmentType.RIGHT, bidirectional: true, children: [new TextRun({ text: 'מרכז פניות נהגים', font: david, size: 24 })] }),
+        new Paragraph({ text: '', spacing: { before: 300 } }),
+        new Paragraph({ alignment: AlignmentType.RIGHT, bidirectional: true, children: [new TextRun({ text: 'שלום רב,', font: david, size: 24 })] }),
+        new Paragraph({ text: '', spacing: { before: 300 } }),
+        new Paragraph({ alignment: AlignmentType.RIGHT, bidirectional: true, spacing: { before: 200, after: 400 }, children: [
+          new TextRun({ text: 'הנדון: ', font: david, size: 24, bold: true, underline: {} }),
+          new TextRun({ text: 'בקשתו להישפט הודעת קנס / דו"ח מספר ' + reportNumber + ' .', font: david, size: 24, bold: true, underline: {} }),
+        ]}),
+        new Paragraph({ alignment: AlignmentType.JUSTIFIED, bidirectional: true, spacing: { before: 120, after: 120, line: 360 }, indent: { left: 782, hanging: 357 }, children: [
+          new TextRun({ text: '1.\t', font: david, size: 24 }),
+          new TextRun({ text: 'ביום ' + offenseDate + ' נרשם כנגדי דו"ח תנועה מספר ' + reportNumber + ' בגין עבירת ' + offenseType + ' .', font: david, size: 24 }),
+        ]}),
+        new Paragraph({ alignment: AlignmentType.JUSTIFIED, bidirectional: true, spacing: { before: 120, after: 120, line: 360 }, indent: { left: 782, hanging: 357 }, children: [
+          new TextRun({ text: '2.\t', font: david, size: 24 }),
+          new TextRun({ text: 'אבקש להישפט בגין דו"ח זה.', font: david, size: 24 }),
+        ]}),
+        new Paragraph({ text: '', spacing: { before: 600 } }),
+        new Paragraph({ alignment: AlignmentType.LEFT, bidirectional: true, children: [new TextRun({ text: 'בברכה,', font: david, size: 24 })] }),
+        new Paragraph({ alignment: AlignmentType.LEFT, bidirectional: true, spacing: { before: 200 }, children: [new TextRun({ text: driverName, font: david, size: 24 })] }),
+        new Paragraph({ alignment: AlignmentType.LEFT, bidirectional: true, children: [new TextRun({ text: 'מספר ת.ז ' + driverId, font: david, size: 24 })] }),
+      ];
+
+      const doc = new Document({ styles: { default: { document: { run: { font: david, size: 24 } } } }, sections: [{ properties: { page: { margin: { top: 1000, right: 1200, bottom: 1000, left: 1200 } } }, children }] });
+      return await Packer.toBlob(doc);
+    }
+    async function generatePoaDocx(data) {
+      const { Document, Packer, Paragraph, TextRun, AlignmentType } = getDocx();
+      const david = 'David';
+      const today = new Date();
+      const day = today.getDate();
+      const months = ['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
+      const month = months[today.getMonth()];
+      const year = today.getFullYear();
+      const clientName = data.clientName || '_______________';
+      const clientId = data.clientId || '_______________';
+
+      const numbered = (n, t) => new Paragraph({ alignment: AlignmentType.JUSTIFIED, bidirectional: true, spacing: { before: 120, after: 120, line: 360 }, indent: { left: 782, hanging: 357 }, children: [new TextRun({ text: n + ') ', font: david, size: 24 }), new TextRun({ text: t, font: david, size: 24 })] });
+      const justify = (t, opts = {}) => new Paragraph({ alignment: AlignmentType.JUSTIFIED, bidirectional: true, spacing: { before: opts.before ?? 200, after: opts.after ?? 200, line: 360 }, children: [new TextRun({ text: t, font: david, size: 24 })] });
+
+      const children = [
+        new Paragraph({ alignment: AlignmentType.CENTER, bidirectional: true, spacing: { after: 500 }, children: [new TextRun({ text: 'ייפוי כוח', font: david, size: 36, bold: true, underline: {} })] }),
+        new Paragraph({ alignment: AlignmentType.RIGHT, bidirectional: true, spacing: { before: 200, after: 300, line: 360 }, children: [
+          new TextRun({ text: 'אני הח"מ   ', font: david, size: 24 }),
+          new TextRun({ text: clientName, font: david, size: 24, bold: true }),
+          new TextRun({ text: '   ת.ז ', font: david, size: 24 }),
+          new TextRun({ text: clientId, font: david, size: 24, bold: true }),
+        ]}),
+        justify('ממנה (ים) את עורכי הדין: בטי מצר-לוי ו/או רווית קרן-רוזין ו/או ליאת אלזנר ו/או אופיר דוד ו/או  פרי מצר סולומון כולם יחד וכל אחד מהם לחוד, להיות בא(י) כחי(נו) ולהופיע ולפעול עבורי(נו) ובשמי(נו) ובמקומי(נו)', { after: 300 }),
+        numbered('1', 'לבקש ולקבל חוות דעת רפואית מכל רופא או מוסד שבדק אותי(נו) או חוות דעת אחרת הנוגעת לענין הנד"ל.'),
+        numbered('2', 'לפנות לכל בית משפט, בית דין, יחידת משטרה, יחידת שירות בתי הסוהר, שלטונות מס הכנסה, המכס, משרד התחבורה או כל מוסד אחר, הן ממשלתי והן אחר בקשר לייצוגי(נו) הנ"ל ולקבל מהם כל מידע עלי(נו).'),
+        numbered('3', 'לפנות לכל בנק ולקבל ממנו מידע על חשבונותי(נו) אצלו הנוגעים לענין הנ"ל.'),
+        numbered('4', 'לייצגני(נו) בפלילים, להודות בשמי(נו) בכל עובדה שימצאו לנכון, אף בהעדרי(נו). והנני(נו) מבקש(ים) מבית המשפט לשפוט אותי(נו) שלא בפני(נו) וכי אהיה מיוצג(ים) על ידי בא(י) כחי הנ"ל.'),
+        numbered('5', 'לנהל את משפטי(נו) הנ"ל לפי ראות עיניהם ובכלל זה לעשות את כל הצעדים שימצאו לנכון ומועיל בקשר עם המשפט הנ"ל, והנני(נו) מאשר(ים) את מעשי בא(י) כוחי(נו) אלה מראש.'),
+        numbered('6', 'והנני(נו) מסכימ(ים), כי כל אחד ממורשי(נו) הנ"ל יהא רשאי להרשות כל עורך דין או עורכי דין אחר(ים) לשמש תחתיו בכל משא ומתן משפטי לפי יפוי כח זה.'),
+        numbered('7', 'הנני(נו) מוותר(ים) על ההגנות המסורות לי(נו) לפי חוק הגנת הפרטיות, התשמ"א-1981 ומבקש(ים) מכל בעל מאגר מידע או מחזיקו לאפשר לבאי כחי(נו) הנ"ל לעיין במידע אודותי(נו) והמצוי אצלם.'),
+        new Paragraph({ alignment: AlignmentType.RIGHT, bidirectional: true, spacing: { before: 600, after: 400 }, children: [new TextRun({ text: 'ולראיה באתי(נו) על החתום, היום ' + day + '  לחודש ' + month + ' שנת ' + year, font: david, size: 24 })] }),
+        new Paragraph({ alignment: AlignmentType.LEFT, bidirectional: true, spacing: { before: 400 }, children: [new TextRun({ text: '______________', font: david, size: 24 })] }),
+        new Paragraph({ alignment: AlignmentType.LEFT, bidirectional: true, children: [new TextRun({ text: 'חתימה', font: david, size: 24 })] }),
+        new Paragraph({ alignment: AlignmentType.RIGHT, bidirectional: true, spacing: { before: 600, after: 200 }, children: [new TextRun({ text: 'הנני מאשר את החתימה(ות) הנ"ל', font: david, size: 24, bold: true })] }),
+        new Paragraph({ alignment: AlignmentType.LEFT, bidirectional: true, spacing: { before: 600 }, children: [new TextRun({ text: '_____________________', font: david, size: 24 })] }),
+        new Paragraph({ alignment: AlignmentType.LEFT, bidirectional: true, children: [new TextRun({ text: data.signingLawyer || 'פרי מצר סולומון, עו"ד', font: david, size: 24, bold: true })] }),
+      ];
+
+      const doc = new Document({ styles: { default: { document: { run: { font: david, size: 24 } } } }, sections: [{ properties: { page: { margin: { top: 1000, right: 1200, bottom: 1000, left: 1200 } } }, children }] });
+      return await Packer.toBlob(doc);
+    }
+
+    async function generateDemandLetterDocx(data) {
+      const { Document, Packer, Paragraph, TextRun, AlignmentType } = getDocx();
+      const david = 'David';
+      const today = new Date().toLocaleDateString('he-IL');
+      const children = [
+        new Paragraph({ alignment: AlignmentType.RIGHT, bidirectional: true, children: [new TextRun({ text: 'BML Law — בטי מצר לוי ושות' עורכי דין', font: david, size: 26, bold: true })] }),
+        new Paragraph({ alignment: AlignmentType.RIGHT, bidirectional: true, children: [new TextRun({ text: BML_ADDRESS + ' | ' + BML_PHONE + ' | ' + BML_EMAIL, font: david, size: 22 })] }),
+        new Paragraph({ text: '', spacing: { before: 400 } }),
+        new Paragraph({ alignment: AlignmentType.LEFT, bidirectional: true, children: [new TextRun({ text: today, font: david, size: 24 })] }),
+        new Paragraph({ text: '', spacing: { before: 200 } }),
+        new Paragraph({ alignment: AlignmentType.RIGHT, bidirectional: true, children: [new TextRun({ text: 'לכבוד', font: david, size: 24 })] }),
+        new Paragraph({ alignment: AlignmentType.RIGHT, bidirectional: true, children: [new TextRun({ text: data.recipientName || '', font: david, size: 24, bold: true })] }),
+        new Paragraph({ alignment: AlignmentType.RIGHT, bidirectional: true, children: [new TextRun({ text: data.recipientAddress || '', font: david, size: 24 })] }),
+        new Paragraph({ alignment: AlignmentType.CENTER, bidirectional: true, spacing: { before: 500, after: 400 }, children: [
+          new TextRun({ text: 'הנדון: ', font: david, size: 28, bold: true, underline: {} }),
+          new TextRun({ text: data.subject || 'כתב דרישה והתראה', font: david, size: 28, bold: true, underline: {} }),
+        ]}),
+        new Paragraph({ alignment: AlignmentType.JUSTIFIED, bidirectional: true, spacing: { before: 200, after: 300, line: 360 }, children: [new TextRun({ text: 'בשם מרשי, ' + (data.clientName || '______') + ', הרינו לפנות אליך כדלקמן:', font: david, size: 24 })] }),
+        ...(data.sections || []).map((s, i) => new Paragraph({ alignment: AlignmentType.JUSTIFIED, bidirectional: true, spacing: { before: 120, after: 120, line: 360 }, indent: { left: 782, hanging: 357 }, children: [new TextRun({ text: (i + 1) + '.\t', font: david, size: 24, bold: true }), new TextRun({ text: s, font: david, size: 24 })] })),
+        new Paragraph({ alignment: AlignmentType.JUSTIFIED, bidirectional: true, spacing: { before: 400, after: 400, line: 360 }, children: [
+          new TextRun({ text: 'לפיכך, ', font: david, size: 24, bold: true }),
+          new TextRun({ text: 'נדרשים בזאת, תוך ' + (data.deadline || '14 ימים') + ', ' + (data.demand || 'לפעול בהתאם לאמור') + '. חלוף המועד ללא תגובה — ייאלץ מרשי לנקוט בכל ההליכים המשפטיים העומדים לרשותו.', font: david, size: 24 }),
+        ]}),
+        new Paragraph({ alignment: AlignmentType.LEFT, bidirectional: true, spacing: { before: 600 }, children: [new TextRun({ text: 'בברכה,', font: david, size: 24 })] }),
+        new Paragraph({ alignment: AlignmentType.LEFT, bidirectional: true, spacing: { before: 400 }, children: [new TextRun({ text: data.signingLawyer || 'בטי מצר לוי, עו"ד', font: david, size: 24, bold: true })] }),
+        new Paragraph({ alignment: AlignmentType.LEFT, bidirectional: true, children: [new TextRun({ text: 'BML Law', font: david, size: 22 })] }),
+      ];
+      const doc = new Document({ styles: { default: { document: { run: { font: david, size: 24 } } } }, sections: [{ properties: { page: { margin: { top: 1000, right: 1200, bottom: 1000, left: 1200 } } }, children }] });
+      return await Packer.toBlob(doc);
+    }
+
+    async function generateCourtMotionDocx(data) {
+      const { Document, Packer, Paragraph, TextRun, AlignmentType } = getDocx();
+      const david = 'David';
+      const today = new Date();
+      const day = today.getDate();
+      const months = ['ינואר','פברואר','מרץ','אפריל','מאי','יוני','יולי','אוגוסט','ספטמבר','אוקטובר','נובמבר','דצמבר'];
+      const children = [
+        new Paragraph({ alignment: AlignmentType.CENTER, bidirectional: true, spacing: { after: 200 }, children: [new TextRun({ text: data.court || 'בבית משפט השלום', font: david, size: 24, bold: true })] }),
+        new Paragraph({ alignment: AlignmentType.CENTER, bidirectional: true, spacing: { after: 400 }, children: [new TextRun({ text: (data.caseNumber ? 'ת"א ' + data.caseNumber : '') + (data.judge ? '   בפני כב' השופט ' + data.judge : ''), font: david, size: 24, bold: true })] }),
+        ...(data.parties || []).map((p) => new Paragraph({ alignment: AlignmentType.RIGHT, bidirectional: true, spacing: { before: 100 }, children: [new TextRun({ text: (p.role || '') + ': ' + (p.name || ''), font: david, size: 24, bold: true })] })),
+        new Paragraph({ alignment: AlignmentType.RIGHT, bidirectional: true, spacing: { before: 500, after: 400 }, children: [new TextRun({ text: data.motionTitle || 'בקשה', font: david, size: 32, bold: true, underline: { type: 'dotted' } })] }),
+        ...(data.opening ? [new Paragraph({ alignment: AlignmentType.JUSTIFIED, bidirectional: true, spacing: { before: 200, after: 200, line: 360 }, children: [new TextRun({ text: data.opening, font: david, size: 24 })] })] : []),
+        ...(data.sections || []).map((s, i) => new Paragraph({ alignment: AlignmentType.JUSTIFIED, bidirectional: true, spacing: { before: 120, after: 120, line: 360 }, indent: { left: 782, hanging: 357 }, children: [new TextRun({ text: (i + 1) + '.\t', font: david, size: 24 }), new TextRun({ text: s, font: david, size: 24 })] })),
+        new Paragraph({ alignment: AlignmentType.CENTER, bidirectional: true, spacing: { before: 600, after: 300 }, children: [new TextRun({ text: 'היום, ' + day + ' ב' + months[today.getMonth()] + ' ' + today.getFullYear() + ', הרצליה', font: david, size: 24, bold: true })] }),
+        new Paragraph({ alignment: AlignmentType.LEFT, bidirectional: true, spacing: { before: 400 }, children: [new TextRun({ text: '___________________', font: david, size: 24 })] }),
+        new Paragraph({ alignment: AlignmentType.LEFT, bidirectional: true, children: [new TextRun({ text: data.signingLawyer || 'בטי מצר לוי, עו"ד', font: david, size: 24, bold: true })] }),
+      ];
+      const doc = new Document({ styles: { default: { document: { run: { font: david, size: 24 } } } }, sections: [{ properties: { page: { margin: { top: 1000, right: 1200, bottom: 1000, left: 1200 } } }, children }] });
+      return await Packer.toBlob(doc);
+    }
+
+    // ============================================================
+    // UI HELPERS
+    // ============================================================
+    function Field({ label, hint, children }) {
+      return (
+        <div className="mb-4">
+          <label className="block text-sm font-medium text-slate-700 mb-1.5">{label}</label>
+          {children}
+          {hint && <p className="text-xs text-slate-500 mt-1">{hint}</p>}
+        </div>
+      );
+    }
+    function Input({ value, onChange, placeholder }) {
+      return <input type="text" value={value || ''} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} dir="rtl" className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-800 text-right text-sm" />;
+    }
+    function Textarea({ value, onChange, placeholder, rows = 3 }) {
+      return <textarea value={value || ''} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={rows} dir="rtl" className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-800 text-right text-sm resize-y" />;
+    }
+    function Select({ value, onChange, options }) {
+      return (
+        <select value={value || ''} onChange={(e) => onChange(e.target.value)} dir="rtl" className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-800 text-right text-sm bg-white">
+          <option value="">— בחר —</option>
+          {options.map((o) => <option key={o} value={o}>{o}</option>)}
+        </select>
+      );
+    }
+
+    // ============================================================
+    // PASSWORD GATE
+    // ============================================================
+    function PasswordGate({ children }) {
+      const [authed, setAuthed] = useState(false);
+      const [pw, setPw] = useState('');
+      const [err, setErr] = useState(false);
+      useEffect(() => { if (sessionStorage.getItem('bml-auth') === 'ok') setAuthed(true); }, []);
+      const submit = (e) => {
+        e.preventDefault();
+        if (pw === window.APP_PASSWORD) { sessionStorage.setItem('bml-auth', 'ok'); setAuthed(true); }
+        else { setErr(true); setPw(''); }
+      };
+      if (authed) return children;
+      return (
+        <div className="min-h-screen bg-gradient-to-br from-slate-100 to-slate-200 flex items-center justify-center p-4">
+          <form onSubmit={submit} className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full">
+            <div className="w-14 h-14 mx-auto mb-5 bg-gradient-to-br from-slate-700 to-slate-900 rounded-xl flex items-center justify-center text-white text-2xl">🛡️</div>
+            <h1 className="text-2xl font-bold text-slate-900 text-center mb-2">BML Docs</h1>
+            <p className="text-sm text-slate-500 text-center mb-6">כניסה לכלי מסמכים משפטיים</p>
+            <input type="password" value={pw} onChange={(e) => { setPw(e.target.value); setErr(false); }} placeholder="סיסמא" autoFocus className={'w-full px-3 py-2.5 border rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-800 text-right ' + (err ? 'border-red-400 bg-red-50' : 'border-slate-300')} />
+            {err && <p className="text-xs text-red-600 mt-2 text-right">סיסמא שגויה</p>}
+            <button type="submit" className="w-full mt-4 py-2.5 bg-slate-900 hover:bg-slate-700 text-white font-medium rounded-lg">כניסה</button>
+          </form>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // TRAFFIC REPORT EXTRACTOR
+    // ============================================================
+    function fileToBase64(file) {
+      return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result.split(',')[1]);
+        r.onerror = reject;
+        r.readAsDataURL(file);
+      });
+    }
+
+    function ReportExtractor({ onExtract }) {
+      const [phase, setPhase] = useState('idle');
+      const [err, setErr] = useState('');
+      const [fname, setFname] = useState('');
+      const inputRef = useRef(null);
+
+      const handle = async (file) => {
+        if (!file) return;
+        const isPdf = /\.pdf$/i.test(file.name);
+        const isImg = /\.(jpe?g|png|webp)$/i.test(file.name);
+        if (!isPdf && !isImg) { setErr('PDF, JPG או PNG בלבד'); setPhase('error'); return; }
+        setFname(file.name); setPhase('analyzing'); setErr('');
+        try {
+          const b64 = await fileToBase64(file);
+          const mime = isPdf ? 'application/pdf' : (file.type || 'image/jpeg');
+          const prompt = 'זהו צילום/PDF של הודעת קנס תנועה ישראלית. חלץ JSON בלבד: {"reportNumber":"מספר הדוח","offenseDate":"DD/MM/YYYY","offenseType":"תיאור העבירה","driverName":"שם הנהג","driverId":"ת.ז","vehicleNumber":"מספר רכב"}. שדה חסר = "". ללא markdown.';
+          const txt = await callGeminiVision(b64, mime, prompt);
+          const clean = txt.replace(/```json|```/g, '').trim();
+          const m = clean.match(/\{[\s\S]*\}/);
+          const data = JSON.parse(m ? m[0] : clean);
+          onExtract(data);
+          setPhase('success');
+        } catch (e) { setErr(e.message); setPhase('error'); }
+      };
+
+      return (
+        <section className="bg-gradient-to-br from-blue-50 to-white border border-blue-200 rounded-lg p-5">
+          <div onClick={() => phase !== 'analyzing' && inputRef.current?.click()}
+               onDragOver={(e) => e.preventDefault()}
+               onDrop={(e) => { e.preventDefault(); handle(e.dataTransfer.files?.[0]); }}
+               className="cursor-pointer flex items-center gap-4">
+            <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-blue-700 to-slate-900 flex items-center justify-center text-white text-xl shrink-0">
+              {phase === 'analyzing' ? '⏳' : phase === 'success' ? '✓' : phase === 'error' ? '⚠️' : '✨'}
+            </div>
+            <div className="flex-1">
+              {phase === 'idle' && <><div className="font-semibold text-slate-900">שאיבה אוטומטית מהדוח (AI)</div><p className="text-sm text-slate-600">גרור צילום או PDF של הודעת הקנס — הנתונים ימולאו אוטומטית</p></>}
+              {phase === 'analyzing' && <><div className="font-semibold text-slate-900">מנתח...</div><p className="text-sm text-slate-600">{fname}</p></>}
+              {phase === 'success' && <><div className="font-semibold text-emerald-700">הנתונים נשאבו! סקור למטה</div><p className="text-sm text-slate-600">לחץ לשאיבה מקובץ אחר</p></>}
+              {phase === 'error' && <><div className="font-semibold text-red-700">שגיאה</div><p className="text-sm text-slate-600">{err}</p></>}
+            </div>
+          </div>
+          <input ref={inputRef} type="file" accept=".pdf,.jpg,.jpeg,.png,.webp" className="hidden" onChange={(e) => handle(e.target.files?.[0])} />
+        </section>
+      );
+    }
+
+    // ============================================================
+    // FORMS
+    // ============================================================
+    function TrialRequestForm({ data, setData }) {
+      const today = new Date().toLocaleDateString('he-IL');
+      const onExtract = (ex) => {
+        const u = { ...data };
+        ['reportNumber','offenseDate','offenseType','driverName','driverId','vehicleNumber'].forEach((f) => { if (ex[f]?.trim()) u[f] = ex[f]; });
+        setData(u);
+      };
+      return (
+        <div className="space-y-6">
+          <ReportExtractor onExtract={onExtract} />
+          <section className="bg-white border border-slate-200 rounded-lg p-5">
+            <h3 className="font-semibold text-slate-900 mb-4 pb-2 border-b border-slate-100">תאריך המכתב</h3>
+            <Field label="תאריך" hint="ברירת מחדל: היום"><Input value={data.letterDate || today} onChange={(v) => setData({ ...data, letterDate: v })} /></Field>
+          </section>
+          <section className="bg-white border border-slate-200 rounded-lg p-5">
+            <h3 className="font-semibold text-slate-900 mb-4 pb-2 border-b border-slate-100">פרטי הלקוח (החותם)</h3>
+            <div className="grid md:grid-cols-2 gap-4">
+              <Field label="שם מלא"><Input value={data.driverName} onChange={(v) => setData({ ...data, driverName: v })} placeholder="ישראל ישראלי" /></Field>
+              <Field label="תעודת זהות"><Input value={data.driverId} onChange={(v) => setData({ ...data, driverId: v })} placeholder="000000000" /></Field>
+            </div>
+          </section>
+          <section className="bg-white border border-slate-200 rounded-lg p-5">
+            <h3 className="font-semibold text-slate-900 mb-4 pb-2 border-b border-slate-100">פרטי הדוח</h3>
+            <div className="grid md:grid-cols-2 gap-4">
+              <Field label="מספר הדוח"><Input value={data.reportNumber} onChange={(v) => setData({ ...data, reportNumber: v })} placeholder="12345678" /></Field>
+              <Field label="תאריך העבירה"><Input value={data.offenseDate} onChange={(v) => setData({ ...data, offenseDate: v })} placeholder="01/01/2025" /></Field>
+              <Field label="סוג העבירה"><Input value={data.offenseType} onChange={(v) => setData({ ...data, offenseType: v })} placeholder="מהירות מופרזת" /></Field>
+            </div>
+          </section>
+        </div>
+      );
+    }
+
+    function PoaForm({ data, setData }) {
+      return (
+        <div className="space-y-6">
+          <section className="bg-white border border-slate-200 rounded-lg p-5">
+            <h3 className="font-semibold text-slate-900 mb-4 pb-2 border-b border-slate-100">פרטי הלקוח</h3>
+            <div className="grid md:grid-cols-2 gap-4">
+              <Field label="שם מלא"><Input value={data.clientName} onChange={(v) => setData({ ...data, clientName: v })} placeholder="ישראל ישראלי" /></Field>
+              <Field label="תעודת זהות"><Input value={data.clientId} onChange={(v) => setData({ ...data, clientId: v })} placeholder="000000000" /></Field>
+            </div>
+          </section>
+          <section className="bg-white border border-slate-200 rounded-lg p-5">
+            <h3 className="font-semibold text-slate-900 mb-4 pb-2 border-b border-slate-100">עו"ד מאמת</h3>
+            <Field label='עו"ד שמאמת את החתימה'><Select value={data.signingLawyer} onChange={(v) => setData({ ...data, signingLawyer: v })} options={BML_LAWYERS_SIGN} /></Field>
+          </section>
+        </div>
+      );
+    }
+
+    function DemandLetterForm({ data, setData }) {
+      const [loading, setLoading] = useState({});
+      const updateSec = (i, v) => { const s = [...(data.sections || [])]; s[i] = v; setData({ ...data, sections: s }); };
+      const aiExpand = async (i) => {
+        const raw = data.sections[i];
+        if (!raw?.trim()) { alert('רשום נקודות'); return; }
+        setLoading({ ...loading, [i]: true });
+        try {
+          const r = await callGemini('הקשר: כתב דרישה בנושא "' + (data.subject || '') + '". הרחב לפסקה משפטית אחת רהוטה, לשון זכר נסתר, 2-4 משפטים. ללא מספור, ללא markdown:\n' + raw, LEGAL_SYSTEM);
+          updateSec(i, r);
+        } catch (e) { alert(e.message); }
+        setLoading({ ...loading, [i]: false });
+      };
+      return (
+        <div className="space-y-6">
+          <section className="bg-white border border-slate-200 rounded-lg p-5">
+            <h3 className="font-semibold text-slate-900 mb-4 pb-2 border-b border-slate-100">פרטי הנמען והתיק</h3>
+            <div className="grid md:grid-cols-2 gap-4">
+              <Field label="שם הנמען"><Input value={data.recipientName} onChange={(v) => setData({ ...data, recipientName: v })} /></Field>
+              <Field label="כתובת"><Input value={data.recipientAddress} onChange={(v) => setData({ ...data, recipientAddress: v })} /></Field>
+              <Field label="שם המרשה"><Input value={data.clientName} onChange={(v) => setData({ ...data, clientName: v })} /></Field>
+              <Field label="נושא"><Input value={data.subject} onChange={(v) => setData({ ...data, subject: v })} /></Field>
+            </div>
+            <Field label='עו"ד חותם'><Select value={data.signingLawyer} onChange={(v) => setData({ ...data, signingLawyer: v })} options={BML_LAWYERS_SIGN} /></Field>
+          </section>
+          <section className="bg-white border border-slate-200 rounded-lg p-5">
+            <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-100">
+              <h3 className="font-semibold text-slate-900">סעיפי המכתב</h3>
+              <button onClick={() => setData({ ...data, sections: [...(data.sections || []), ''] })} className="text-xs font-medium text-slate-700">+ הוסף סעיף</button>
+            </div>
+            {(data.sections || []).map((s, i) => (
+              <div key={i} className="mb-4">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-sm font-medium text-slate-700">סעיף {i + 1}</span>
+                  <button onClick={() => aiExpand(i)} className="text-xs px-2 py-1 bg-slate-100 hover:bg-slate-200 rounded">{loading[i] ? '...' : '✨ הרחב'}</button>
+                </div>
+                <Textarea value={s} onChange={(v) => updateSec(i, v)} placeholder="נקודות או פסקה" />
+              </div>
+            ))}
+          </section>
+          <section className="bg-white border border-slate-200 rounded-lg p-5">
+            <Field label="תוכן הדרישה"><Textarea value={data.demand} onChange={(v) => setData({ ...data, demand: v })} rows={2} /></Field>
+            <Field label="מועד תגובה"><Input value={data.deadline} onChange={(v) => setData({ ...data, deadline: v })} placeholder="14 ימים" /></Field>
+          </section>
+        </div>
+      );
+    }
+
+    function CourtMotionForm({ data, setData }) {
+      const [loading, setLoading] = useState({});
+      const updateParty = (i, k, v) => { const p = [...(data.parties || [])]; p[i] = { ...p[i], [k]: v }; setData({ ...data, parties: p }); };
+      const updateSec = (i, v) => { const s = [...(data.sections || [])]; s[i] = v; setData({ ...data, sections: s }); };
+      const aiExpand = async (i) => {
+        const raw = data.sections[i];
+        if (!raw?.trim()) { alert('רשום נקודות'); return; }
+        setLoading({ ...loading, [i]: true });
+        try {
+          const r = await callGemini('הקשר: ' + (data.motionTitle || 'בקשה לבית משפט') + '. הרחב לפסקה משפטית אחת רהוטה, לשון זכר נסתר. ללא מספור, ללא markdown:\n' + raw, LEGAL_SYSTEM);
+          updateSec(i, r);
+        } catch (e) { alert(e.message); }
+        setLoading({ ...loading, [i]: false });
+      };
+      return (
+        <div className="space-y-6">
+          <section className="bg-white border border-slate-200 rounded-lg p-5">
+            <h3 className="font-semibold text-slate-900 mb-4 pb-2 border-b border-slate-100">פרטי הערכאה</h3>
+            <div className="grid md:grid-cols-2 gap-4">
+              <Field label="בית המשפט"><Input value={data.court} onChange={(v) => setData({ ...data, court: v })} placeholder="בית משפט השלום בתל אביב" /></Field>
+              <Field label="מספר תיק"><Input value={data.caseNumber} onChange={(v) => setData({ ...data, caseNumber: v })} placeholder="12345-01-25" /></Field>
+              <Field label="כב' השופט"><Input value={data.judge} onChange={(v) => setData({ ...data, judge: v })} /></Field>
+            </div>
+          </section>
+          <section className="bg-white border border-slate-200 rounded-lg p-5">
+            <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-100">
+              <h3 className="font-semibold text-slate-900">צדדים</h3>
+              <button onClick={() => setData({ ...data, parties: [...(data.parties || []), { role: '', name: '' }] })} className="text-xs font-medium text-slate-700">+ הוסף צד</button>
+            </div>
+            {(data.parties || []).map((p, i) => (
+              <div key={i} className="grid grid-cols-2 gap-2 mb-2">
+                <Input value={p.role} onChange={(v) => updateParty(i, 'role', v)} placeholder="התובע / הנתבע" />
+                <Input value={p.name} onChange={(v) => updateParty(i, 'name', v)} placeholder="שם מלא, ת.ז" />
+              </div>
+            ))}
+          </section>
+          <section className="bg-white border border-slate-200 rounded-lg p-5">
+            <Field label="כותרת הבקשה"><Input value={data.motionTitle} onChange={(v) => setData({ ...data, motionTitle: v })} placeholder="בקשה למתן ארכה" /></Field>
+            <Field label='עו"ד חותם'><Select value={data.signingLawyer} onChange={(v) => setData({ ...data, signingLawyer: v })} options={BML_LAWYERS_SIGN} /></Field>
+            <Field label="פסקת פתיחה"><Textarea value={data.opening} onChange={(v) => setData({ ...data, opening: v })} /></Field>
+          </section>
+          <section className="bg-white border border-slate-200 rounded-lg p-5">
+            <div className="flex items-center justify-between mb-4 pb-2 border-b border-slate-100">
+              <h3 className="font-semibold text-slate-900">סעיפים</h3>
+              <button onClick={() => setData({ ...data, sections: [...(data.sections || []), ''] })} className="text-xs font-medium text-slate-700">+ הוסף סעיף</button>
+            </div>
+            {(data.sections || []).map((s, i) => (
+              <div key={i} className="mb-4">
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-sm font-medium text-slate-700">סעיף {i + 1}</span>
+                  <button onClick={() => aiExpand(i)} className="text-xs px-2 py-1 bg-slate-100 hover:bg-slate-200 rounded">{loading[i] ? '...' : '✨ הרחב'}</button>
+                </div>
+                <Textarea value={s} onChange={(v) => updateSec(i, v)} placeholder="נקודות או פסקה" />
+              </div>
+            ))}
+          </section>
+        </div>
+      );
+    }
+
+    // ============================================================
+    // MAIN APP
+    // ============================================================
+    function App() {
+      const [docType, setDocType] = useState(null);
+      const [data, setData] = useState({});
+      const [downloading, setDownloading] = useState(null);
+
+      const reset = () => { setDocType(null); setData({}); };
+
+      const download = async (fmt) => {
+        setDownloading(fmt);
+        try {
+          let blob, name;
+          if (docType === 'court_motion') { blob = await generateCourtMotionDocx(data); name = (data.motionTitle || 'בקשה') + '.docx'; }
+          else if (docType === 'trial_request_traffic') { blob = await generateTrialRequestDocx(data); name = 'בקשה להישפט - ' + (data.driverName || '') + '.docx'; }
+          else if (docType === 'demand_letter') { blob = await generateDemandLetterDocx(data); name = 'כתב דרישה.docx'; }
+          else if (docType === 'power_of_attorney') { blob = await generatePoaDocx(data); name = 'ייפוי כוח - ' + (data.clientName || '') + '.docx'; }
+
+          if (fmt === 'docx') {
+            window.saveAs(blob, name);
+          } else {
+            alert('הורדת PDF: השתמש בכפתור Word ואז שמור כ-PDF מתוך Word, או הדפס מהדפדפן (Ctrl+P).');
+          }
+        } catch (e) { alert('שגיאה: ' + e.message); }
+        setDownloading(null);
+      };
+
+      if (!docType) {
+        return (
+          <div className="min-h-screen bg-slate-50 py-12 px-4">
+            <div className="max-w-4xl mx-auto">
+              <div className="text-center mb-10">
+                <h1 className="text-3xl font-bold text-slate-900 mb-2">כלי יצירת מסמכים משפטיים</h1>
+                <p className="text-slate-500">BML Law — בחר סוג מסמך</p>
+              </div>
+              <div className="grid md:grid-cols-2 gap-4">
+                {DOC_TYPES.map((t) => (
+                  <button key={t.id} onClick={() => setDocType(t.id)} className="bg-white border border-slate-200 rounded-xl p-6 text-right hover:border-slate-900 hover:shadow-lg transition-all">
+                    <h3 className="text-lg font-semibold text-slate-900 mb-1">{t.title}</h3>
+                    <p className="text-sm text-slate-500">{t.subtitle}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      const meta = DOC_TYPES.find((t) => t.id === docType);
+      return (
+        <div className="min-h-screen bg-slate-50 pb-28">
+          <header className="bg-white border-b border-slate-200 sticky top-0 z-10">
+            <div className="max-w-4xl mx-auto px-4 py-4 flex items-center gap-3">
+              <button onClick={reset} className="text-slate-400 hover:text-slate-900 text-xl">→</button>
+              <div>
+                <div className="font-semibold text-slate-900 text-sm">{meta.title}</div>
+                <div className="text-xs text-slate-500">BML Law</div>
+              </div>
+            </div>
+          </header>
+          <main className="max-w-4xl mx-auto px-4 py-6">
+            {docType === 'court_motion' && <CourtMotionForm data={data} setData={setData} />}
+            {docType === 'trial_request_traffic' && <TrialRequestForm data={data} setData={setData} />}
+            {docType === 'demand_letter' && <DemandLetterForm data={data} setData={setData} />}
+            {docType === 'power_of_attorney' && <PoaForm data={data} setData={setData} />}
+          </main>
+          <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 shadow-lg">
+            <div className="max-w-4xl mx-auto px-4 py-3 flex items-center justify-end gap-2">
+              <button onClick={() => download('docx')} disabled={downloading} className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-blue-700 hover:bg-blue-800 rounded-lg disabled:opacity-50">
+                {downloading === 'docx' ? '⏳' : '📄'} הורד Word
+              </button>
+              <button onClick={() => download('pdf')} disabled={downloading} className="inline-flex items-center gap-2 px-5 py-2.5 text-sm font-semibold text-white bg-red-700 hover:bg-red-800 rounded-lg disabled:opacity-50">
+                📕 הורד PDF
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(
+      <PasswordGate><App /></PasswordGate>
+    );
+  </script>
+</body>
+</html>
